@@ -31,6 +31,7 @@ from GCMicrolensing import TwoLens1S
 from GCMicrolensing import ThreeLens1S
 from GCMicrolensing import OneL1S
 import pandas as pd  # noqa: F401
+import requests  # noqa: F401
 
 
 class Astrometry:
@@ -46,7 +47,7 @@ class Astrometry:
     def __init__(self):
 
         # default to SummaryPSFstats_center.ecsv
-        self.psf_file = pathlib.Path("SummaryPSFstats_center.ecsv")
+        self.psf_file = pathlib.Path("input/SummaryPSFstats_center.ecsv")
         self.SCA = 1
 
     @staticmethod
@@ -257,6 +258,13 @@ class Astrometry:
         # Extract "FWHM" for the specified filter
         for i, f in enumerate(filter):
             fwhm[i] = SCA_data[SCA_data["Filter"] == f]["FWHM"].values
+
+        gaussian_to_fwhm = 2*np.sqrt(2*np.log(2))
+        snr = flux / flux_err
+
+        pos_err = fwhm / (gaussian_to_fwhm * snr)
+
+        return pos_err
 
     def download_psf_table(self):
         """Download the PSF table from the remote repository."""
