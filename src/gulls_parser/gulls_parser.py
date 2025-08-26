@@ -38,6 +38,7 @@ import pathlib
 import pandas as pd
 import numpy as np
 from io import StringIO
+from . import Astrometry
 
 class GullsParser:
     def __init__(self, input_dir="input", output_dir="output"):
@@ -514,13 +515,12 @@ class GullsParser:
                 # save the DataFrame to the output directory
                 dic["data"]["sigma_x"] = 0
                 dic["data"]["sigma_y"] = 0
-                dic["data"]["sigma_x_err"] = 0
-                dic["data"]["sigma_y_err"] = 0
+                dic["data"]["pos_err"] = 0
                 ##################################################################
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
-                header += ["sigma_x", "sigma_y", "sigma_x_err", "sigma_y_err"]
+                header += ["sigma_x", "sigma_y", "pos_err"]
                 if header != dic["data"].columns.tolist():
                     raise ValueError("Header does not match DataFrame columns.")
 
@@ -637,19 +637,23 @@ class GullsParser:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
                 
             if add_astrometry:
+                from astrometry import Astrometry
+                astrometry = Astrometry()
+
                 ##################################################################
                 # Here you would add your astrometric processing logic
                 # For now, we just add 4 dummy columns the same length as BJD and
                 # save the DataFrame to the output directory
                 dic["data"]["sigma_x"] = 0
                 dic["data"]["sigma_y"] = 0
-                dic["data"]["sigma_x_err"] = 0
-                dic["data"]["sigma_y_err"] = 0
                 ##################################################################
+
+
+                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["flux_err"], )
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
-                header += ["sigma_x", "sigma_y", "sigma_x_err", "sigma_y_err"]
+                header += ["sigma_x", "sigma_y", "pos_err"]
                 if header != dic["data"].columns.tolist():
                     raise ValueError("Header does not match DataFrame columns.")
 
@@ -779,13 +783,12 @@ class GullsParser:
                 # save the DataFrame to the output directory
                 dic["data"]["sigma_x"] = 0
                 dic["data"]["sigma_y"] = 0
-                dic["data"]["sigma_x_err"] = 0
-                dic["data"]["sigma_y_err"] = 0
+                dic["data"]["pos_err"] = 0
                 ##################################################################
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
-                header += ["sigma_x", "sigma_y", "sigma_x_err", "sigma_y_err"]
+                header += ["sigma_x", "sigma_y", "pos_err"]
                 if header != dic["data"].columns.tolist():
                     raise ValueError("Header does not match DataFrame columns.")
             
