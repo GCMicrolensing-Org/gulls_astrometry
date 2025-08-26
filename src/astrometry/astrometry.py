@@ -30,6 +30,7 @@ import numpy as np  # noqa: F401
 from GCMicrolensing import TwoLens1S
 from GCMicrolensing import ThreeLens1S
 from GCMicrolensing import OneL1S
+import pandas as pd  # noqa: F401
 
 
 class Astrometry:
@@ -41,6 +42,12 @@ class Astrometry:
     (typically Einstein radii unless the package has been configured
     otherwise).
     """
+
+    def __init__(self):
+
+        # default to SummaryPSFstats_center.ecsv
+        self.psf_file = pathlib.Path("SummaryPSFstats_center.ecsv")
+        self.SCA = 1
 
     @staticmethod
     def read_dic(data, lenses):
@@ -220,3 +227,44 @@ class Astrometry:
         delta_x_three = triple_system['cent_x_hr'] - triple_system['x_src_hr']
         delta_y_three = triple_system['cent_y_hr'] - triple_system['y_src_hr']
         return triple_model, triple_system, delta_x_three, delta_y_three
+
+    def uncertainty_conversion(self, flux: np.ndarray, flux_err: np.ndarray, filter: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Convert flux and flux error from instrumental to physical units.
+
+        Parameters
+        ----------
+        flux : ndarray
+            The measured flux values (Jansky/steradian).
+        flux_err : ndarray
+            The associated flux errors (Jansky/steradian).
+        filter : ndarray
+            Roman filter key.
+
+        Returns
+        -------
+        tuple[ndarray, ndarray]
+            The converted astrometric error (mas).
+        """
+        if not self.psf_file.exists():
+            self.download_psf_table()
+
+        # Load the PSF table into a DataFrame
+        psf_data = pd.read_csv(self.psf_file, comment="#")
+        SCA_data = psf_data[psf_data["SCA"] == self.SCA]
+
+        fwhm = np.zeros_like(filter)
+
+        # Extract "FWHM" for the specified filter
+        for i, f in enumerate(filter):
+            fwhm[i] = SCA_data[SCA_data["Filter"] == f]["FWHM"].values
+
+    def download_psf_table(self):
+        """Download the PSF table from the remote repository."""
+        url = "https://github.com/rges-pit/roman-technical-information/blob/main/data/WideFieldInstrument/Imaging/PointSpreadFunctions/SummaryPSFstats_center.ecsv"
+        response = requests.get(url)
+        if response.status_code == 200:
+            with open(self.psf_file, "wb") as f:
+                f.write(response.content)
+        else:
+            raise ValueError("Failed to download PSF table.")
+        return self.psf_file
