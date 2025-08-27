@@ -126,7 +126,7 @@ class Astrometry:
         return single_model, one_system, dx, dy
 
     @staticmethod
-    def centroid_shifts_2l(data, *, a1: float = 0.5, n_rings: int = 24):
+    def centroid_shifts_2l(data, *, a1: float = 0.0, n_rings: int = 24):
         """Compute centroid shifts for a binary-lens single-source (2L1S) model.
 
         Parameters
