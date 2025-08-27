@@ -126,7 +126,7 @@ class Astrometry:
         return single_model, one_system, dx, dy
 
     @staticmethod
-    def centroid_shifts_2l(data):
+    def centroid_shifts_2l(data, *, a1: float = 0.5, n_rings: int = 24):
         """Compute centroid shifts for a binary-lens single-source (2L1S) model.
 
         Parameters
@@ -154,22 +154,29 @@ class Astrometry:
         accommodate common naming conventions. Additional preprocessing (e.g.,
         unit conversion) should occur prior to invocation if needed.
         """
+        u0_list = data.get("u0_list", data.get("u0"))
+        if not isinstance(u0_list, (list, tuple, np.ndarray)):
+            u0_list = [u0_list]
+
         args = {
-            "t0": data["t0"],
-            "tE": data["tE"],
-            "rho": data["rho"],
-            "u0_list": data.get("u0_list", data["u0"]),  # accepts either name
-            "q": data.get("q", data.get("q2")),           # q or q2
-            "s": data.get("s", data.get("s2")),           # s or s2
-            "alpha": data["alpha"],                        # position angle
-            "t_lc": data.get("BJD", data.get("t_lc")),    # accept BJD or t_lc
+            "t0":    float(data["t0"]),
+            "tE":    float(data["tE"]),
+            "rho":   float(data["rho"]),
+            "u0_list": u0_list,
+            "q":     float(data.get("q", data.get("q2"))),
+            "s":     float(data.get("s", data.get("s2"))),
+            "alpha": float(data["alpha"]),
+            "t_lc":  np.asarray(data.get("BJD", data.get("t_lc")), dtype=float),
+            "a1":    float(a1),   #limb-darkening coefficient
         }
 
-        double_model = TwoLens1S(**args)
-        two_system = double_model.systems[0]
-        delta_x = two_system['cent_x_hr'] - two_system['x_src_hr']
-        delta_y = two_system['cent_y_hr'] - two_system['y_src_hr']
-        return double_model, two_system, delta_x, delta_y
+        binary_model = TwoLens1S(**args)
+        two_system = binary_model.systems[0]
+
+        delta_x = two_system["cent_x_lc"] - two_system["x_src_lc"]
+        delta_y = two_system["cent_y_lc"] - two_system["y_src_lc"]
+
+        return binary_model, two_system, delta_x, delta_y
 
     @staticmethod
     def centroid_shifts_3l(data):

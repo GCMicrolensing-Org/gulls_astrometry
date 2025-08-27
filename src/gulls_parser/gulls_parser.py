@@ -638,14 +638,50 @@ class GullsParser:
                 
             if add_astrometry:
                 from astrometry import Astrometry
-                astrometry = Astrometry()
 
                 ##################################################################
-                # Here you would add your astrometric processing logic
-                # For now, we just add 4 dummy columns the same length as BJD and
-                # save the DataFrame to the output directory
-                dic["data"]["sigma_x"] = 0
-                dic["data"]["sigma_y"] = 0
+                if "u0_list" not in dic:
+                    if "u0" in dic:
+                        dic["u0_list"] = [dic["u0"]]
+                    else:
+                        raise KeyError("Neither 'u0_list' nor 'u0' present in parameters.")
+
+                elif not isinstance(dic["u0_list"], (list, tuple, np.ndarray)):
+                    dic["u0_list"] = [dic["u0_list"]]
+
+                #Compute Centroid Shift
+                try:
+                    astrometry = Astrometry()
+                    binary_model, two_system, dx, dy = astrometry.centroid_shifts_2l(
+                        {
+                            "t0":    dic["t0"],
+                            "tE":    dic["tE"],
+                            "rho":   dic["rho"],
+                            "u0_list": dic["u0_list"],
+                            "q":     dic.get("q", dic.get("q2")),
+                            "s":     dic.get("s", dic.get("s2")),
+                            "alpha": dic["alpha"],
+                            "BJD":   dic["BJD"], 
+                        },
+                        a1=0.5 
+                    )
+
+                    # Store shifts 
+                    dic["data"]["delta_x"] = dx
+                    dic["data"]["delta_y"] = dy
+
+                except Exception as e:
+                    n = len(dic["BJD"])
+                    dic["data"]["delta_x"] = np.full(n, np.nan)
+                    dic["data"]["delta_y"] = np.full(n, np.nan)
+                    print(f"[WARN] astrometric centroid failed for {data_file.name}: {e}")
+
+                for c in ["delta_x", "delta_y"]:
+                    if c not in header:
+                        header.append(c)
+
+                if header != dic["data"].columns.tolist():
+                    raise ValueError("Header does not match DataFrame columns after adding delta_x/delta_y.")
                 ##################################################################
 
 
