@@ -13,5 +13,10 @@
 [ ] LOM for binary lens
 
 [ ] do we need to apply the parallax shift to the centroid shift?
+  - I think so. the trajectory isn't the real trajectory without the shifts
 
 [ ] limb darkening coefficient?
+  - ask Fari (same for all a)
+
+[ ] cos(alpha)
+  - probably. check the gulls code

@@ -39,6 +39,8 @@ import pathlib
 import pandas as pd
 import numpy as np
 from io import StringIO
+from astropy.coordinates import SkyCoord
+import astropy.units as u
 
 from gulls_astrometry import Astrometry, CentroidAddition
 
@@ -104,11 +106,12 @@ class GullsParser:
             "rho": "rho",
             "piEN": "pi_EN",
             "piEE": "pi_EE",
-            "vtilde_ref_N": "vN",
-            "vtilde_ref_E": "vE",
-            "Lens_W146": "fl_0",
-            "Lens_W087": "fl_1",
-            "Lens_W213": "fl_2"
+            "murel_ref_delta": "muN",
+            "murel_ref_alpha": "muE",
+            "ra_deg": "RA_deg",
+            "dec_deg": "dec_deg",
+            "Lens_mul": "mul_L",
+            "Lens_mub": "mub_L"
         }  # gulls_key: df_key
 
         self.additional_master_columns_for_2L = {
@@ -124,6 +127,63 @@ class GullsParser:
         }
 
         self.filters = ["F146", "F087", "F213"]  # Observatories codes
+
+    @staticmethod
+    def pmlb_to_ra_dec(mu_l, mu_b, ra, dec, cosb=True):
+        """
+        Convert proper motion components from Galactic (l, b) to ICRS (RA, Dec).
+
+        Parameters
+        ----------
+        mu_l : float
+            Proper motion in Galactic longitude *including the cos(b) factor*,
+            i.e. μ_l* = μ_l cos(b), in mas/yr.
+        mu_b : float
+            Proper motion in Galactic latitude μ_b, in mas/yr.
+        ra : float
+            Right ascension of the source (degrees, ICRS).
+        dec : float
+            Declination of the source (degrees, ICRS).
+        cosb : bool
+            If True, include the cos(b) factor in the conversion (mu_l = μ_l, not μ_l*).
+
+        Returns
+        -------
+        tuple[float, float]
+            (mu_ra_cosdec, mu_dec) in mas/yr, where mu_ra_cosdec = μ_α* = μ_α cos(δ).
+
+        Notes
+        -----
+        This uses Astropy's frame transforms. The position (ra, dec) is used to
+        determine (l, b); the supplied (μ_l*, μ_b) are then attached in the
+        Galactic frame and transformed to ICRS.
+        """
+        # Position in ICRS
+        icrs_pos = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+
+        # Same position expressed in Galactic to get l, b
+        gal_pos = icrs_pos.galactic
+
+        # Include the cos(b) factor if requested
+        if cosb:
+            mu_l *= np.cos(np.radians(gal_pos.b))
+
+        # Attach the provided Galactic proper motions (mas/yr) at that position
+        gal_with_pm = SkyCoord(
+            l=gal_pos.l,
+            b=gal_pos.b,
+            pm_l_cosb=mu_l * (u.mas / u.yr),
+            pm_b=mu_b * (u.mas / u.yr),
+            frame="galactic",
+        )
+
+        # Transform to ICRS; Astropy carries the PM through the Jacobian
+        icrs_with_pm = gal_with_pm.icrs
+
+        mu_ra_cosdec = icrs_with_pm.pm_ra_cosdec.to(u.mas / u.yr).value
+        mu_dec = icrs_with_pm.pm_dec.to(u.mas / u.yr).value
+
+        return mu_ra_cosdec, mu_dec
 
     @staticmethod
     def concatenate_master_df(path_list):
@@ -469,11 +529,18 @@ class GullsParser:
                     dic["ml_1"] = float(parts[2])
                     dic["ml_2"] = float(parts[3])
                     dic["ml"] = [float(m) for m in parts[1:]]
+                    # Get the lens fluxes
+                    dic["fl"], _ = GullsParser.get_fluxes(
+                        np.array(dic["ml"]),
+                        [0.0, 0.0, 0.0],
+                        [0, 1, 2],
+                        zp
+                    ) 
                 elif "fs" in line:
                     parts = line.split()
-                    dic["FS_0"] = float(parts[1])
-                    dic["FS_1"] = float(parts[2])
-                    dic["FS_2"] = float(parts[3])
+                    dic["fs_0"] = float(parts[1])
+                    dic["fs_1"] = float(parts[2])
+                    dic["fs_2"] = float(parts[3])
                     dic["fs"] = [float(f) for f in parts[1:]]
                 elif "Obssrcmag" in line:
                     parts = line.split()
@@ -496,9 +563,6 @@ class GullsParser:
                 np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
-
-            # Calculate the lens flux in each band
-
 
             # look up the zero points for the flux calculation
             elements = self.filters
@@ -530,12 +594,14 @@ class GullsParser:
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for single lens event: {data_file.name}")
 
-            # Restructure fl
-            dic["fl"] = [dic["fl_0"], dic["fl_1"], dic["fl_2"]]
+            # Calculate the lens proper motion in ra*cos(dec), dec
+            mu_ra_cosdec, mu_dec = GullsParser.pmlb_to_ra_dec(
+                dic["mul_L"], dic["mub_L"], dic["RA_deg"], dic["dec_deg"], cosb=False
+            )
+            dic["mu_ra_cosdec_L"] = mu_ra_cosdec
+            dic["mu_dec_L"] = mu_dec
 
             if add_astrometry:
-                
-
                 ##################################################################
                 u0_or_list = dic.get("u0_list", dic.get("u0"))
                 u0_list = [float(u0_or_list)] if np.isscalar(u0_or_list) else list(u0_or_list)
@@ -576,18 +642,37 @@ class GullsParser:
                 dic["data"]["sigma_N"], dic["data"]["sigma_E"] = CentroidAddition.rotate(
                     dx,
                     dy, 
-                    dic["vN"], 
-                    dic["vE"]
+                    dic["muN"], 
+                    dic["muE"]
                 )
 
+                # Calculate in mas
+                dic["sigma_N_mas"] *= dic["theta_E"]  # Convert to mas
+                dic["sigma_E_mas"] *= dic["theta_E"]  # Convert to mas
+
+                # calculate in deg
+                dic["sigma_N_deg"] = dic["sigma_N_mas"] / 3600.0  # Convert to degrees
+                dic["sigma_E_deg"] = dic["sigma_E_mas"] / 3600.0  # Convert to degrees
+
+                # Calculate the lens system motion (mas positions, relative to the t_ref con
+                dic["L_pos_N"] = dic["mu_dec_L"] * (dic["data"]["Simulation_time"] - dic["t0_lens1"]) / 365.35
+                dic["L_pos_E"] = dic["mu_ra_cosdec_L"] * (dic["data"]["Simulation_time"] - dic["t0_lens1"]) / 365.35
+
+                # Calculate N, E pos relative to the lens axis
+                dic["rel_pos_N"] = dic["sigma_N_deg"] + dic["dec_deg"]
+                dic["rel_pos_E"] = dic["sigma_E_deg"] + dic["RA_deg"]
+
                 # Calculate the position error
-                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+                astrometry = Astrometry()
+                dic["pos_err_mas"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+
+                dic["data"]["pos_err_deg"] = dic["pos_err_mas"] / 3600.0
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
-                header += ["sigma_x", "sigma_y", "pos_err"]
-                if header != dic["data"].columns.tolist():
-                    raise ValueError("Header does not match DataFrame columns.")
+                header += ["pos_N", "pos_E", "pos_err_deg"]
+            if header != dic["data"].columns.tolist():
+                raise ValueError("Header does not match DataFrame columns.")
 
             output_path = self.output_single_lens_dir / data_file.name
             GullsParser.save_lc_output(dic["data"], output_path, header, comment_text)
@@ -638,15 +723,22 @@ class GullsParser:
             for line in comment_text.splitlines():
                 if "Obslensmag" in line:
                     parts = line.split()
-                    dic["FL_0"] = float(parts[1])
-                    dic["FL_1"] = float(parts[2])
-                    dic["FL_2"] = float(parts[3])
-                    dic["FL"] = [float(f) for f in parts[1:]]
+                    dic["ml_0"] = float(parts[1])
+                    dic["ml_1"] = float(parts[2])
+                    dic["ml_2"] = float(parts[3])
+                    dic["ml"] = [float(f) for f in parts[1:]]
+                    # Get the lens fluxes
+                    dic["fl"], _ = GullsParser.get_fluxes(
+                        np.array(dic["ml"]),
+                        [0.0, 0.0, 0.0],
+                        [0, 1, 2],
+                        zp
+                    ) 
                 elif "fs" in line:
                     parts = line.split()
-                    dic["FS_0"] = float(parts[1])
-                    dic["FS_1"] = float(parts[2])
-                    dic["FS_2"] = float(parts[3])
+                    dic["fs_0"] = float(parts[1])
+                    dic["fs_1"] = float(parts[2])
+                    dic["fs_2"] = float(parts[3])
                     dic["fs"] = [float(f) for f in parts[1:]]
                 elif "Obssrcmag" in line:
                     parts = line.split()
@@ -703,10 +795,14 @@ class GullsParser:
                 if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
-                    raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
-                
-            # Restructure fl
-            dic["fl"] = [dic["fl_0"], dic["fl_1"], dic["fl_2"]]
+                    raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")                             
+
+            # Calculate the proper motion in ra*cos(dec), dec
+            mu_ra_cosdec, mu_dec = GullsParser.pmlb_to_ra_dec(
+                dic["mu_l"], dic["mu_b"], dic["RA_deg"], dic["dec_deg"], cosb=False
+            )
+            dic["mu_ra_cosdec"] = mu_ra_cosdec
+            dic["mu_dec"] = mu_dec
             
             if add_astrometry:
                 ##################################################################
@@ -772,22 +868,41 @@ class GullsParser:
                     dic["fl"][dic["obs"]]
                 )
 
-                # Calculate the total centroid shift in N, E
+                # Calculate the total centroid shift in N, E (theta_E)
                 dic["data"]["sigma_N"], dic["data"]["sigma_E"] = CentroidAddition.rotate(
                     dx,
                     dy, 
-                    dic["vN"], 
-                    dic["vE"]
+                    dic["muN"], 
+                    dic["muE"]
                 )
 
+                # Calculate in mas
+                dic["sigma_N_mas"] *= dic["theta_E"]  # Convert to mas
+                dic["sigma_E_mas"] *= dic["theta_E"]  # Convert to mas
+
+                # calculate in deg
+                dic["sigma_N_deg"] = dic["sigma_N_mas"] / 3600.0  # Convert to degrees
+                dic["sigma_E_deg"] = dic["sigma_E_mas"] / 3600.0  # Convert to degrees
+
+                # Calculate the lens system motion (mas positions, relative to the t_ref con
+                dic["L_pos_N"] = dic["mu_dec"] * (dic["data"]["Simulation_time"] - dic["t0_lens1"]) / 365.35
+                dic["L_pos_E"] = dic["mu_ra_cosdec"] * (dic["data"]["Simulation_time"] - dic["t0_lens1"]) / 365.35
+
+                # Calculate N, E pos relative to the lens axis
+                dic["rel_pos_N"] = dic["sigma_N_deg"] + dic["dec_deg"]
+                dic["rel_pos_E"] = dic["sigma_E_deg"] + dic["RA_deg"]
+
                 # Calculate the position error
-                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+                astrometry = Astrometry()
+                dic["pos_err_mas"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+
+                dic["data"]["pos_err_deg"] = dic["pos_err_mas"] / 3600.0
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
-                header += ["sigma_x", "sigma_y", "pos_err"]
-                if header != dic["data"].columns.tolist():
-                    raise ValueError("Header does not match DataFrame columns.")
+                header += ["pos_N", "pos_E", "pos_err_deg"]
+            if header != dic["data"].columns.tolist():
+                raise ValueError("Header does not match DataFrame columns.")
 
             # Save the processed DataFrame to the output directory
             output_path = self.output_binary_lens_dir / data_file.name
@@ -795,8 +910,11 @@ class GullsParser:
 
     def process_triple_lens(self, add_astrometry=True):
         """
-        Process triple lens data and save the output.
+        Process triple lens data and save the output. 
+        This fuction doesn't event a little bit work.
+        It's a tomorrow problem.
         """
+        return None
         # load master file(s) with meta data (.csv, .out)
         self.load_triple_lens_master()
 
@@ -959,8 +1077,8 @@ class GullsParser:
                 # Add the new columns to the header
                 # we are just being explicit to be careful
                 header += ["sigma_x", "sigma_y", "pos_err"]
-                if header != dic["data"].columns.tolist():
-                    raise ValueError("Header does not match DataFrame columns.")
+            if header != dic["data"].columns.tolist():
+                raise ValueError("Header does not match DataFrame columns.")
             
             # Save the processed DataFrame to the output directory
             output_path = self.output_triple_lens_dir / data_file.name
