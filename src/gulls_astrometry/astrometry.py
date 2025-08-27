@@ -112,18 +112,27 @@ class Astrometry:
         dy : ndarray
             Centroid shift in y (cent_y_hr - y_src_hr).
         """
+        u0_or_list = data.get("u0_list", data.get("u0"))
+        if np.isscalar(u0_or_list):
+            u0_list = [float(u0_or_list)]
+        else:
+            u0_list = list(u0_or_list)
+
         args = {
-            "t0": data["t0"],
-            "tE": data["tE"],
-            "rho": data["rho"],
-            "u0_list": data.get("u0_list", data["u0"]),
+            "t0":   float(data["t0"]),
+            "tE":   float(data["tE"]),
+            "rho":  float(data["rho"]),
+            "u0_list": u0_list,
+            "t_lc": data.get("BJD", data.get("t_lc")),
         }
 
-        single_model = OneL1S(**args)
-        one_system = single_model.systems[0]
-        dx = one_system['cent_x_hr'] - one_system['x_src_hr']
-        dy = one_system['cent_y_hr'] - one_system['y_src_hr']
-        return single_model, one_system, dx, dy
+        model = OneL1S(**args)
+        system = model.systems[0]
+
+        dx = system["cent_x_lc"] - system["x_src_lc"]
+        dy = system["cent_y_lc"] - system["y_src_lc"]
+
+        return model, system, dx, dy
 
     @staticmethod
     def centroid_shifts_2l(data, *, a1: float = 0.0, n_rings: int = 24):
