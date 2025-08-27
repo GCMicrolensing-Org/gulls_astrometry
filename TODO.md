@@ -1,4 +1,5 @@
-[ ] ask Matt about x, y in lightcurve (is x the lens axis?)
+[ ] ask Matt about x, y in lightcurve (is x the lens axis?) 
+  - what's up with the lens1 coords for ffps
 
 [ ] figure out fl
 

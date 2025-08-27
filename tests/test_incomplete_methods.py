@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 from unittest.mock import patch, MagicMock
 
-from src.gulls_parser import GullsParser
+from gulls_astrometry import GullsParser
 
 
 class TestIncompleteMethodImplementation:
