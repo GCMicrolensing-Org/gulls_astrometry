@@ -27,9 +27,9 @@ import os, pathlib  # noqa: F401 (kept for potential future file I/O use)
 from astropy.io import ascii  # noqa: F401
 import matplotlib.pyplot as plt  # noqa: F401
 import numpy as np  # noqa: F401
-from gulls_astrometry import TwoLens1S
-from gulls_astrometry import ThreeLens1S
-from gulls_astrometry import OneL1S
+from .ML import TwoLens1S
+#from .ML import ThreeLens1S
+from .ML import OneL1S
 import pandas as pd  # noqa: F401
 import requests  # noqa: F401
 

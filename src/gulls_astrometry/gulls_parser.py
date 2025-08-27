@@ -104,7 +104,6 @@ class GullsParser:
             "rho": "rho",
             "piEN": "pi_EN",
             "piEE": "pi_EE",
-            "mu_rel_N": "mu_rel_N",
             "vtilde_ref_N": "vN",
             "vtilde_ref_E": "vE"
         }  # gulls_key: df_key
