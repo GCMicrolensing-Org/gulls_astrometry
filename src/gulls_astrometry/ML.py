@@ -9,54 +9,95 @@ import math
 from matplotlib.lines import Line2D
 
 class OneL1S:
-    def __init__(self, t0, tE, rho, u0_list):
-        self.t0, self.tE, self.rho, self.u0_list = t0, tE, rho, u0_list
-        self.tau = np.linspace(-4, 4, 200)
-        self.t = self.t0 + self.tau * self.tE
+    def __init__(self, t0, tE, rho, u0_list, t_lc=None):
+        self.t0, self.tE, self.rho = float(t0), float(tE), float(rho)
+        self.u0_list = list(u0_list)
+
+        self.tau    = np.linspace(-4, 4, 200)
+        self.t      = self.t0 + self.tau * self.tE
         self.tau_hr = np.linspace(-4, 4, 1000)
-        self.t_hr = self.t0 + self.tau_hr * self.tE
+        self.t_hr   = self.t0 + self.tau_hr * self.tE
+
+        if t_lc is not None:
+            self.t_lc   = np.asarray(t_lc, dtype=float)
+            self.tau_lc = (self.t_lc - self.t0) / self.tE
+        else:
+            self.tau_lc = np.linspace(-4, 4, 500)
+            self.t_lc   = self.t0 + self.tau_lc * self.tE
 
         self.VBM = VBMicrolensing.VBMicrolensing()
         self.VBM.RelTol = 1e-3
-        self.VBM.Tol = 1e-3
-        self.VBM.astrometry = True
+        self.VBM.Tol    = 1e-3
+        self.VBM.astrometry = True 
 
-        self.colors = [plt.colormaps['BuPu'](i) for i in np.linspace(1.0, 0.4, len(u0_list))]
+        self.colors  = [plt.colormaps['BuPu'](i) for i in np.linspace(1.0, 0.4, len(self.u0_list))]
         self.systems = self._prepare_systems_single()
 
     def _prepare_systems_single(self):
         systems = []
+        eps = 1e-12  
+
         for u0, color in zip(self.u0_list, self.colors):
-            # source track (high-res)
+            # ----- high-res (visuals) -----
             x_src_hr = self.tau_hr
             y_src_hr = np.full_like(self.tau_hr, u0)
-            u = np.sqrt(x_src_hr**2 + y_src_hr**2)
-            theta = np.arctan2(y_src_hr, x_src_hr)
+            u_hr  = np.sqrt(x_src_hr**2 + y_src_hr**2)
+            u_hr  = np.maximum(u_hr, eps)
+            th_hr = np.arctan2(y_src_hr, x_src_hr)
 
-            # analytic 1L1S images (in θ_E units)
-            sqrt_term = np.sqrt(u**2 + 4.0)
-            r_plus  = 0.5 * (u + sqrt_term)
-            r_minus = 0.5 * (u - sqrt_term)
-
-            # magnifications of each image
-            A_tot = (u**2 + 2.0) / (u * sqrt_term)
+            srt_hr  = np.sqrt(u_hr**2 + 4.0)
+            r_plus  = 0.5 * (u_hr + srt_hr)
+            r_minus = 0.5 * (u_hr - srt_hr)
+            A_tot   = (u_hr**2 + 2.0) / (u_hr * srt_hr)
             A_plus  = 0.5 * (A_tot + 1.0)
             A_minus = 0.5 * (A_tot - 1.0)
+            r_cent  = (A_plus * r_plus + A_minus * r_minus) / (A_plus + A_minus) 
+            cent_x_hr = r_cent * np.cos(th_hr)
+            cent_y_hr = r_cent * np.sin(th_hr)
 
-            # flux-weighted centroid radius along the same angle θ
-            r_cent = (A_plus * r_plus + A_minus * r_minus) / (A_plus + A_minus)
+            shift_mag_hr = u_hr / (u_hr**2 + 2.0)
+            dx_hr = shift_mag_hr * np.cos(th_hr)
+            dy_hr = shift_mag_hr * np.sin(th_hr)
 
-            # vector centroid (relative to lens at origin)
-            cent_x_hr = r_cent * np.cos(theta)
-            cent_y_hr = r_cent * np.sin(theta)
+            x_src_lc = self.tau_lc
+            y_src_lc = np.full_like(self.tau_lc, u0)
+            u_lc  = np.sqrt(x_src_lc**2 + y_src_lc**2)
+            u_lc  = np.maximum(u_lc, eps)
+            th_lc = np.arctan2(y_src_lc, x_src_lc)
+
+            srt_lc   = np.sqrt(u_lc**2 + 4.0)
+            r_plus_l = 0.5 * (u_lc + srt_lc)
+            r_minus_l= 0.5 * (u_lc - srt_lc)
+            A_tot_l  = (u_lc**2 + 2.0) / (u_lc * srt_lc)
+            A_plus_l = 0.5 * (A_tot_l + 1.0)
+            A_minus_l= 0.5 * (A_tot_l - 1.0)
+            r_cent_l = (A_plus_l*r_plus_l + A_minus_l*r_minus_l) / (A_plus_l + A_minus_l)
+            cent_x_lc = r_cent_l * np.cos(th_lc)
+            cent_y_lc = r_cent_l * np.sin(th_lc)
+
+            shift_mag_lc = u_lc / (u_lc**2 + 2.0)
+            delta_x_lc = shift_mag_lc * np.cos(th_lc)
+            delta_y_lc = shift_mag_lc * np.sin(th_lc)
+
+            u_vis    = np.sqrt(u0**2 + self.tau**2)
+            u_vis    = np.maximum(u_vis, eps)
+            mag_espl = [self.VBM.ESPLMag2(ui, self.rho) for ui in u_vis]
 
             systems.append({
-                'u0': u0,
-                'color': color,
-                'x_src_hr': x_src_hr,
-                'y_src_hr': y_src_hr,
-                'cent_x_hr': cent_x_hr,
-                'cent_y_hr': cent_y_hr,
+                "u0": u0, "color": color,
+
+                # high-res (visuals)
+                "x_src_hr": x_src_hr, "y_src_hr": y_src_hr,
+                "cent_x_hr": cent_x_hr, "cent_y_hr": cent_y_hr,
+                "delta_x_hr": dx_hr, "delta_y_hr": dy_hr,
+
+                # light-curve grid (to export / save)
+                "x_src_lc": x_src_lc, "y_src_lc": y_src_lc,
+                "cent_x_lc": cent_x_lc, "cent_y_lc": cent_y_lc,
+                "delta_x_lc": delta_x_lc, "delta_y_lc": delta_y_lc,
+
+                # visuals
+                "mag_vis": np.asarray(mag_espl),
             })
         return systems
     
