@@ -104,9 +104,11 @@ class GullsParser:
             "rho": "rho",
             "piEN": "pi_EN",
             "piEE": "pi_EE",
-            "mu_rel_N": "mu_rel_N",
             "vtilde_ref_N": "vN",
-            "vtilde_ref_E": "vE"
+            "vtilde_ref_E": "vE",
+            "Lens_W146": "fl_0",
+            "Lens_W087": "fl_1",
+            "Lens_W213": "fl_2"
         }  # gulls_key: df_key
 
         self.additional_master_columns_for_2L = {
@@ -418,7 +420,7 @@ class GullsParser:
 
     def process_single_lens(self, add_astrometry=True):
         """
-        Process single lens data and save the output.
+        Process single lens data and save the output. Does not implement limb darkening.
         """
         # load master file(s) with meta data (.csv, .out, .hdf5)
         self.load_single_lens_master()
@@ -528,6 +530,9 @@ class GullsParser:
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for single lens event: {data_file.name}")
 
+            # Restructure fl
+            dic["fl"] = [dic["fl_0"], dic["fl_1"], dic["fl_2"]]
+
             if add_astrometry:
                 astrometry = Astrometry()
 
@@ -578,7 +583,7 @@ class GullsParser:
 
     def process_binary_lens(self, add_astrometry=True):
         """
-        Process binary lens data and save the output.
+        Process binary lens data and save the output. Assumes dark lens companion.
         """
         # load master file(s) with meta data (.csv, .out)
         self.load_binary_lens_master()
@@ -689,19 +694,82 @@ class GullsParser:
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
                 
+            # Restructure fl
+            dic["fl"] = [dic["fl_0"], dic["fl_1"], dic["fl_2"]]
+            
             if add_astrometry:
-                astrometry = Astrometry()
-
                 ##################################################################
-                # Here you would add your astrometric processing logic
-                # For now, we just add 4 dummy columns the same length as BJD and
-                # save the DataFrame to the output directory
-                double_model, two_system, delta_x, delta_y = Astrometry.centroid_shifts_2l(dic["data"])
+                if "u0_list" not in dic:
+                    if "u0" in dic:
+                        dic["u0_list"] = [dic["u0"]]
+                    else:
+                        raise KeyError("Neither 'u0_list' nor 'u0' present in parameters.")
 
-                dic["data"]["sigma_x"] = delta_x
-                dic["data"]["sigma_y"] = delta_y
+                elif not isinstance(dic["u0_list"], (list, tuple, np.ndarray)):
+                    dic["u0_list"] = [dic["u0_list"]]
+
+                #Compute Centroid Shift
+                try:
+                    astrometry = Astrometry()
+                    binary_model, two_system, dx, dy = astrometry.centroid_shifts_2l(
+                        {
+                            "t0":    dic["t0"],
+                            "tE":    dic["tE"],
+                            "rho":   dic["rho"],
+                            "u0_list": dic["u0_list"],
+                            "q":     dic.get("q", dic.get("q2")),
+                            "s":     dic.get("s", dic.get("s2")),
+                            "alpha": dic["alpha"],
+                            "BJD":   dic["BJD"], 
+                        },
+                        a1=0.5 
+                    )
+
+                    # Store shifts 
+                    dic["data"]["delta_x"] = dx
+                    dic["data"]["delta_y"] = dy
+
+                except Exception as e:
+                    n = len(dic["BJD"])
+                    dic["data"]["delta_x"] = np.full(n, np.nan)
+                    dic["data"]["delta_y"] = np.full(n, np.nan)
+                    print(f"[WARN] astrometric centroid failed for {data_file.name}: {e}")
+
+                for c in ["delta_x", "delta_y"]:
+                    if c not in header:
+                        header.append(c)
+
+                if header != dic["data"].columns.tolist():
+                    raise ValueError("Header does not match DataFrame columns after adding delta_x/delta_y.")
                 ##################################################################
 
+                x_S = dic["data"]["source_x"] + dx  # + dic["data"]["parallax_shift_x"]
+                y_S = dic["data"]["source_y"] + dy  # + dic["data"]["parallax_shift_y"]
+                x_L = dic["data"]["lens1_x"]
+                y_L = dic["data"]["lens1_y"]
+                x_L2 = dic["data"]["lens2_x"]  # LOM?
+                y_L2 = dic["data"]["lens2_y"]
+
+
+                # Calculate the combined centroid position relative to lens COM at time t_ref
+                dic["data"]["combined_x"], dic["data"]["combined_y"] = CentroidAddition.add_centroids(
+                    x_S, 
+                    y_S, 
+                    x_L, 
+                    y_L, 
+                    dic["true_F"]-dic["fl"][dic["obs"]], 
+                    dic["fl"][dic["obs"]]
+                )
+
+                # Calculate the total centroid shift in N, E
+                dic["data"]["sigma_N"], dic["data"]["sigma_E"] = CentroidAddition.rotate(
+                    dx,
+                    dy, 
+                    dic["vN"], 
+                    dic["vE"]
+                )
+
+                # Calculate the position error
                 dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
 
                 # Add the new columns to the header
