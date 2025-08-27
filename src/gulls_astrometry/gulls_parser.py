@@ -34,11 +34,13 @@ master df, 1L example:
 """
 
 from os import path
+import sys
 import pathlib
 import pandas as pd
 import numpy as np
 from io import StringIO
-from . import Astrometry
+
+from gulls_astrometry import Astrometry, CentroidAddition
 
 class GullsParser:
     def __init__(self, input_dir="input", output_dir="output"):
@@ -96,17 +98,20 @@ class GullsParser:
         self.output_triple_lens_dir = self.output_dir / "3L"
 
         self.master_column_mapping = {
-            "t0_lens1": "t0",
+            "t0lens1": "t0",
             "tE_ref": "tE",
-            "u0_lens1": "u0",
+            "u0lens1": "u0",
             "rho": "rho",
             "piEN": "pi_EN",
-            "piEE": "pi_EE"
+            "piEE": "pi_EE",
+            "mu_rel_N": "mu_rel_N",
+            "vtilde_ref_N": "vN",
+            "vtilde_ref_E": "vE"
         }  # gulls_key: df_key
 
         self.additional_master_columns_for_2L = {
-            "q": "q",
-            "s": "s",
+            "Planet_q": "q",
+            "Planet_s": "s",
             "alpha": "alpha"
         }
 
@@ -145,7 +150,11 @@ class GullsParser:
             pd.DataFrame: Loaded DataFrame.
         """
         if path.suffix == ".hdf5":
-            return pd.read_hdf(path)
+            table = pd.read_hdf(path)
+            # Uncomment the following lines to enable CSV conversion
+            #if not path.with_suffix('.csv').exists():
+            #    table.to_csv(path.with_suffix('.csv'), index=False)  # Save a CSV copy
+            return table
         else:
             return pd.read_csv(path)
 
@@ -183,30 +192,33 @@ class GullsParser:
 
         # Load the master DataFrame(s) and concatenate them if multiple
         self.single_lens_master = self.load_master(master_files)
+        print("Loaded single lens master DataFrame.")
 
     def load_binary_lens_master(self):
         """
         Load the master file(s) for binary lens systems and save them as a class attribute.
         """
         # master files are all files ending in .csv, or .out
-        master_files = list(self.binary_lens_dir.glob("*.csv")) + list(self.binary_lens_dir.glob("*.out"))
+        master_files = list(self.binary_lens_dir.glob("*.csv")) + list(self.binary_lens_dir.glob("*.out")) + list(self.binary_lens_dir.glob("*.hdf5"))
         if not master_files:
             raise FileNotFoundError(f"No master files found in: {self.binary_lens_dir}")
 
         # Load the master DataFrame(s)
         self.binary_lens_master = self.load_master(master_files)
+        print("Loaded binary lens master DataFrame.")
 
     def load_triple_lens_master(self):
         """
         Load the master file(s) for triple lens systems and save them as a class attribute.
         """
         # master files are all files ending in .csv, or .out
-        master_files = list(self.triple_lens_dir.glob("*.csv")) + list(self.triple_lens_dir.glob("*.out"))
+        master_files = list(self.triple_lens_dir.glob("*.csv")) + list(self.triple_lens_dir.glob("*.out")) + list(self.triple_lens_dir.glob("*.hdf5"))
         if not master_files:
             raise FileNotFoundError(f"No master files found in: {self.triple_lens_dir}")
 
         # Load the master DataFrame(s)
         self.triple_lens_master = self.load_master(master_files)
+        print("Loaded triple lens master DataFrame.")
 
     @staticmethod
     def save_lc_output(df, output_path, header, comment_text=""):
@@ -292,7 +304,8 @@ class GullsParser:
         Returns:
         - A DataFrame with additional columns for magnitudes and their errors.
         """
-        if len(fs) != len(observatory_codes) or len(ms) != len(observatory_codes):
+        no_of_unique_codes = len(set(observatory_codes))
+        if len(fs) != no_of_unique_codes or len(ms) != no_of_unique_codes:
             raise ValueError("Length of fs and ms must match the number of observatory codes.")
         
         # Calculate the magnitudes
@@ -320,7 +333,6 @@ class GullsParser:
             print(f"Zero point table not found at {table_path}. Downloading from URL.")
             
             # Use requests to download the table from the URL
-            import requests
             url = "https://github.com/rges-pit/roman-technical-information/blob/main/data/WideFieldInstrument/Imaging/ZeroPoints/Roman_zeropoints_20240301.ecsv"
             response = requests.get(url)
             if response.status_code == 200:
@@ -359,9 +371,13 @@ class GullsParser:
         WFI01 F087 25.626924239161607 26.22624275057486 27.242258374678336 4.603590128457495e-20 1.1735535182435983e-30 2.0259717908486147e-08 5.16463511448471e-19
         ...
         """
+        if isinstance(table_path, str):
+            table_path = pathlib.Path(table_path)
+            table_path = table_path.expanduser().resolve()
+
         # Read the table into a DataFrame
         if table_path.suffix == ".ecsv":
-            zp_table = pd.read_csv(table_path, comment='#', delim_whitespace=True)
+            zp_table = pd.read_csv(table_path, comment='#', sep='\s+')
 
         zp = np.zeros(len(elements))
 
@@ -418,9 +434,9 @@ class GullsParser:
             # Strip the file name to get the SubRun, EventID, and Field
             file_name = data_file.stem
             parts = file_name.split("_")
-            SubRun = parts[-3]
-            Field = parts[-2]
-            EventID = parts[-1] 
+            SubRun = int(parts[-3])
+            Field = int(parts[-2])
+            EventID = int(parts[-1].split(".")[0])  # remove .det of the end
 
             # get row from master file based on SubRun, Field, and EventID
             row = self.single_lens_master[
@@ -430,6 +446,7 @@ class GullsParser:
             ]
 
             if row.empty:
+                print(row)
                 raise ValueError(f"No matching row found in master file for SubRun: {SubRun}, Field: {Field}, EventID: {EventID}")
 
             # Load the data file
@@ -464,18 +481,22 @@ class GullsParser:
                     dic["ms"] = [float(m) for m in parts[1:]]
             
             # Calculate magnitudes and their errors
+            print(dic["fs"], dic["ms"])
             dic["true_mag"], dic["true_mag_err"] = GullsParser.get_magnitudes(
                 df["true_relative_flux"].to_numpy(),
-                df["fs"].to_numpy(),
-                df["ms"].to_numpy(),
+                np.array(dic["fs"]),
+                np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
             dic["mag"], dic["mag_err"] = GullsParser.get_magnitudes(
                 df["measured_relative_flux"].to_numpy(),
-                df["fs"].to_numpy(),
-                df["ms"].to_numpy(),
+                np.array(dic["fs"]),
+                np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
+
+            # Calculate the lens flux in each band
+
 
             # look up the zero points for the flux calculation
             elements = self.filters
@@ -490,33 +511,61 @@ class GullsParser:
             dic["true_F"], dic["true_F_err"] = GullsParser.get_fluxes(
                 dic["true_mag"],
                 dic["true_mag_err"],
-                df["observatory_code"].to_numpy(),
+                dic["obs"],
                 zp
             )
             dic["F"], dic["F_err"] = GullsParser.get_fluxes(
                 dic["mag"],
                 dic["mag_err"],
-                df["observatory_code"].to_numpy(),
+                dic["obs"],
                 zp
             )
 
             # Add the parameters from the master file to the dictionary
             for gulls_key, df_key in self.master_column_mapping.items():
-                if df_key in row.columns:
+                if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
-                    raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
+                    raise KeyError(f"Key '{gulls_key}' not found in master file for single lens event: {data_file.name}")
 
-            
             if add_astrometry:
+                astrometry = Astrometry()
+
                 ##################################################################
                 # Here you would add your astrometric processing logic
                 # For now, we just add 4 dummy columns the same length as BJD and
                 # save the DataFrame to the output directory
-                dic["data"]["sigma_x"] = 0
-                dic["data"]["sigma_y"] = 0
-                dic["data"]["pos_err"] = 0
+                single_model, one_system, dx, dy = Astrometry.centroid_shift_1l(dic["data"])
+
+                dic["data"]["sigma_x_S"] = dx
+                dic["data"]["sigma_y_S"] = dy
                 ##################################################################
+
+                x_S = dic["data"]["source_x"] + dx  # + dic["data"]["parallax_shift_x"]
+                y_S = dic["data"]["source_y"] + dy  # + dic["data"]["parallax_shift_y"]
+                x_L = dic["data"]["lens1_x"]
+                y_L = dic["data"]["lens1_y"]
+
+                # Calculate the combined centroid position relative to lens COM at time t_ref
+                dic["data"]["combined_x"], dic["data"]["combined_y"] = CentroidAddition.add_centroids(
+                    x_S, 
+                    y_S, 
+                    x_L, 
+                    y_L, 
+                    dic["true_F"]-dic["fl"][dic["obs"]], 
+                    dic["fl"][dic["obs"]]
+                )
+
+                # Calculate the total centroid shift in N, E
+                dic["data"]["sigma_N"], dic["data"]["sigma_E"] = CentroidAddition.rotate(
+                    dx,
+                    dy, 
+                    dic["vN"], 
+                    dic["vE"]
+                )
+
+                # Calculate the position error
+                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
@@ -545,9 +594,9 @@ class GullsParser:
             # Strip the file name to get the SubRun, EventID, and Field
             file_name = data_file.stem
             parts = file_name.split("_")
-            SubRun = parts[-3]
-            Field = parts[-2]
-            EventID = parts[-1] 
+            SubRun = int(parts[-3])
+            Field = int(parts[-2])
+            EventID = int(parts[-1].split(".")[0])  # remove .det of the end
 
             # get row from master file based on SubRun, Field, and EventID
             row = self.binary_lens_master[
@@ -593,14 +642,14 @@ class GullsParser:
             # Calculate magnitudes and their errors
             dic["true_mag"], dic["true_mag_err"] = GullsParser.get_magnitudes(
                 df["true_relative_flux"].to_numpy(),
-                df["fs"].to_numpy(),
-                df["ms"].to_numpy(),
+                np.array(dic["fs"]),
+                np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
             dic["mag"], dic["mag_err"] = GullsParser.get_magnitudes(
                 df["measured_relative_flux"].to_numpy(),
-                df["fs"].to_numpy(),
-                df["ms"].to_numpy(),
+                np.array(dic["fs"]),
+                np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
 
@@ -616,40 +665,44 @@ class GullsParser:
             # Calculate the fluxes
             dic["true_F"], dic["true_F_err"] = GullsParser.get_fluxes(
                 dic["true_mag"],
+                dic["true_mag_err"],
+                dic["obs"],
                 zp
             )
             dic["F"], dic["F_err"] = GullsParser.get_fluxes(
                 dic["mag"],
+                dic["mag_err"],
+                dic["obs"],
                 zp
             )
 
             # Add the parameters from the master file to the dictionary
             for gulls_key, df_key in self.master_column_mapping.items():
-                if df_key in row.columns:
+                if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
             # Add additional columns for binary lens systems
             for gulls_key, df_key in self.additional_master_columns_for_2L.items():
-                if df_key in row.columns:
+                if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
                 
             if add_astrometry:
-                from astrometry import Astrometry
                 astrometry = Astrometry()
 
                 ##################################################################
                 # Here you would add your astrometric processing logic
                 # For now, we just add 4 dummy columns the same length as BJD and
                 # save the DataFrame to the output directory
-                dic["data"]["sigma_x"] = 0
-                dic["data"]["sigma_y"] = 0
+                double_model, two_system, delta_x, delta_y = Astrometry.centroid_shifts_2l(dic["data"])
+
+                dic["data"]["sigma_x"] = delta_x
+                dic["data"]["sigma_y"] = delta_y
                 ##################################################################
 
-
-                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["flux_err"], )
+                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
@@ -661,7 +714,7 @@ class GullsParser:
             output_path = self.output_binary_lens_dir / data_file.name
             GullsParser.save_lc_output(dic["data"], output_path, header, comment_text)
 
-    def process_triple_lens_astrometry(self, add_astrometry=True):
+    def process_triple_lens(self, add_astrometry=True):
         """
         Process triple lens data and save the output.
         """
@@ -679,9 +732,9 @@ class GullsParser:
             # Strip the file name to get the SubRun, EventID, and Field
             file_name = data_file.stem
             parts = file_name.split("_")
-            SubRun = parts[-3]
-            Field = parts[-2]
-            EventID = parts[-1] 
+            SubRun = int(parts[-3])
+            Field = int(parts[-2])
+            EventID = int(parts[-1].split(".")[0])  # remove .det of the end
 
             # get row from master file based on SubRun, Field, and EventID
             row = self.triple_lens_master[
@@ -747,44 +800,49 @@ class GullsParser:
             dic["true_F"], dic["true_F_err"] = GullsParser.get_fluxes(
                 dic["true_mag"],
                 dic["true_mag_err"],
-                df["observatory_code"].to_numpy(),
+                dic["obs"],
                 zp
             )
             dic["F"], dic["F_err"] = GullsParser.get_fluxes(
                 dic["mag"],
                 dic["mag_err"],
-                df["observatory_code"].to_numpy(),
+                dic["obs"],
                 zp
             )
 
             # Add the parameters from the master file to the dictionary
             for gulls_key, df_key in self.master_column_mapping.items():
-                if df_key in row.columns:
+                if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
             # Add additional columns for binary lens systems
             for gulls_key, df_key in self.additional_master_columns_for_2L.items():
-                if df_key in row.columns:
+                if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
             # Add additional columns for triple lens systems
             for gulls_key, df_key in self.additional_master_columns_for_3L.items():
-                if df_key in row.columns:
+                if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
             
             if add_astrometry:
+                astrometry = Astrometry()
+
                 ##################################################################
                 # Here you would add your astrometric processing logic
                 # For now, we just add 4 dummy columns the same length as BJD and
                 # save the DataFrame to the output directory
-                dic["data"]["sigma_x"] = 0
-                dic["data"]["sigma_y"] = 0
-                dic["data"]["pos_err"] = 0
+                triple_model, triple_system, delta_x_three, delta_y_three = Astrometry.centroid_shifts_3l(dic["data"])
+
+                dic["data"]["sigma_x"] = delta_x_three
+                dic["data"]["sigma_y"] = delta_y_three
                 ##################################################################
+
+                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful

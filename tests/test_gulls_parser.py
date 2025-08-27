@@ -10,7 +10,7 @@ import shutil
 from unittest.mock import patch, mock_open
 
 # Import the module to test
-from src.gulls_parser import GullsParser
+from gulls_astrometry import GullsParser
 
 
 class TestGullsParserInit:
