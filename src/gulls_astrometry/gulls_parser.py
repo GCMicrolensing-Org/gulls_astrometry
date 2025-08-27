@@ -534,16 +534,27 @@ class GullsParser:
             dic["fl"] = [dic["fl_0"], dic["fl_1"], dic["fl_2"]]
 
             if add_astrometry:
-                astrometry = Astrometry()
+                
 
                 ##################################################################
-                # Here you would add your astrometric processing logic
-                # For now, we just add 4 dummy columns the same length as BJD and
-                # save the DataFrame to the output directory
-                single_model, one_system, dx, dy = Astrometry.centroid_shift_1l(dic["data"])
+                u0_or_list = dic.get("u0_list", dic.get("u0"))
+                u0_list = [float(u0_or_list)] if np.isscalar(u0_or_list) else list(u0_or_list)
 
-                dic["data"]["sigma_x_S"] = dx
-                dic["data"]["sigma_y_S"] = dy
+                params_1l = {
+                    "t0":   float(dic["t0"]),
+                    "tE":   float(dic["tE"]),
+                    "rho":  float(dic["rho"]),
+                    "u0_list": u0_list,
+                    "BJD":  dic["BJD"],  
+                }
+
+                _, _, dx, dy = Astrometry.centroid_shifts_1l(params_1l)
+
+                dic["data"]["delta_x"] = dx 
+                dic["data"]["delta_y"] = dy  
+
+                if "delta_x" not in header:
+                    header += ["delta_x", "delta_y"]
                 ##################################################################
 
                 x_S = dic["data"]["source_x"] + dx  # + dic["data"]["parallax_shift_x"]
