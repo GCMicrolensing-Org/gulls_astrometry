@@ -25,39 +25,77 @@ class CentroidAddition:
     """
 
     @staticmethod
-    def add_centroids(positions: np.ndarray, fluxes: np.ndarray) -> np.ndarray:
+    def add_centroids(
+            x_pos_S: np.ndarray,
+            y_pos_S: np.ndarray,
+            x_pos_L: np.ndarray,
+            y_pos_L: np.ndarray,
+            magnified_S_flux: np.ndarray,
+            L_flux: np.ndarray
+        ) -> np.ndarray:
         """Compute the flux–weighted centroid of multiple sources.
 
         Parameters
         ----------
-        positions : ndarray, shape (N, 2)
-            Apparent on-sky positions (x, y) of each of ``N`` sources.
-        fluxes : ndarray, shape (N,)
-            Corresponding flux of each source in arbitrary but consistent
+        x_pos_S : ndarray, shape (N,)
+            x-coordinates of the source.
+        y_pos_S : ndarray, shape (N,)
+            y-coordinates of the source.
+        x_pos_L : ndarray, shape (N,)
+            x-coordinates of the lens (or blend) components.
+        y_pos_L : ndarray, shape (N,)
+            y-coordinates of the lens (or blend) components.
+        magnified_S_flux : ndarray, shape (N,)
+            Corresponding flux of the source in arbitrary but consistent
             units; negative values are allowed mathematically but typically
             unphysical and should be pre-filtered upstream.
+        L_flux : ndarray, shape (N,)
+            Corresponding flux of each lens (or blend) component.
 
         Returns
         -------
         ndarray, shape (2,)
             Flux–weighted centroid ``[x_c, y_c]``. If the total flux is zero
             a zero vector is returned to avoid division-by-zero.
+       """
+        total_flux = magnified_S_flux + L_flux
 
-        Raises
-        ------
-        ValueError
-            If ``positions`` and ``fluxes`` have mismatched lengths.
+        weighted_L_x_pos = x_pos_L * L_flux / total_flux
+        weighted_L_y_pos = y_pos_L * L_flux / total_flux
+        weighted_S_x_pos = x_pos_S * magnified_S_flux / total_flux
+        weighted_S_y_pos = y_pos_S * magnified_S_flux / total_flux
+
+        cumulative_centroid_x = weighted_S_x_pos + weighted_L_x_pos
+        cumulative_centroid_y = weighted_S_y_pos + weighted_L_y_pos
+
+        return cumulative_centroid_x, cumulative_centroid_y
+
+    @staticmethod
+    def rotate(dx, dy, mu_rel_N, mu_rel_E):
+        """Rotate the centroid shift vector by relative proper motion angle + alpha.
+
+        Parameters
+        ----------
+        dx : float
+            Shift in x-direction.
+        dy : float
+            Shift in y-direction.
+        mu_rel_N : float
+            Relative proper motion in the North direction.
+        mu_rel_E : float
+            Relative proper motion in the East direction.
+
+        Returns
+        -------
+        ndarray, shape (2,)
+            Rotated shift vector.
         """
-        if len(positions) != len(fluxes):
-            raise ValueError("Positions and fluxes must have the same length.")
-
-        total_flux = np.sum(fluxes)
-        if total_flux == 0:
-            return np.array([0.0, 0.0])
-
-        weighted_positions = positions.T * fluxes
-        cumulative_centroid = np.sum(weighted_positions, axis=1) / total_flux
-        return cumulative_centroid
+        alpha = np.arctan2(mu_rel_N, mu_rel_E)
+        rotation_matrix = np.array([
+            [np.cos(alpha), -np.sin(alpha)],
+            [np.sin(alpha), np.cos(alpha)]
+        ])
+        return rotation_matrix @ np.array([dx, dy])
 
     def simulate_astrometric_shift(
         self,

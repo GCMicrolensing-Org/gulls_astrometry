@@ -7,11 +7,7 @@ import tempfile
 import pandas as pd
 import numpy as np
 
-# Add project root to path
-sys.path.append(str(pathlib.Path(__file__).parent.parent))
-
-from src.gulls_parser import GullsParser
-
+from gulls_astrometry import GullsParser
 
 def test_basic_import():
     """Test that we can import GullsParser."""

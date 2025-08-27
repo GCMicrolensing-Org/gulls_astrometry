@@ -1,5 +1,0 @@
-# import module
-from .centroid_addition import CentroidAddition
-
-# version
-__version__ = "0.1.0"

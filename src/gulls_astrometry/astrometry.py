@@ -45,7 +45,6 @@ class Astrometry:
     """
 
     def __init__(self):
-
         # default to SummaryPSFstats_center.ecsv
         self.psf_file = pathlib.Path("input/SummaryPSFstats_center.ecsv")
         self.SCA = 1
