@@ -39,6 +39,9 @@ import pathlib
 import pandas as pd
 import numpy as np
 from io import StringIO
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+import requests
 
 from gulls_astrometry import Astrometry, CentroidAddition
 
@@ -104,11 +107,13 @@ class GullsParser:
             "rho": "rho",
             "piEN": "pi_EN",
             "piEE": "pi_EE",
-            "vtilde_ref_N": "vN",
-            "vtilde_ref_E": "vE",
-            "Lens_W146": "fl_0",
-            "Lens_W087": "fl_1",
-            "Lens_W213": "fl_2"
+            "murel_ref_delta": "muN",
+            "murel_ref_alpha": "muE",
+            "ra_deg": "RA_deg",
+            "dec_deg": "dec_deg",
+            "Lens_mul": "mul_L",
+            "Lens_mub": "mub_L",
+            "thetaE": "theta_E"
         }  # gulls_key: df_key
 
         self.additional_master_columns_for_2L = {
@@ -124,6 +129,44 @@ class GullsParser:
         }
 
         self.filters = ["F146", "F087", "F213"]  # Observatories codes
+
+    @staticmethod
+    def pmlb_to_ra_dec(mu_l, mu_b, ra, dec, input_is_mu_lstar=False):
+        """
+        If input_is_mu_lstar is False (default), we assume μ_l (not cos-weighted) and
+        multiply by cos(b) to get μ_l* before transforming.
+
+        Parameters
+        ----------
+        mu_l : float
+            Proper motion in the l direction (galactic coordinates).
+        mu_b : float
+            Proper motion in the b direction (galactic coordinates).
+        ra : float
+            Right ascension (ICRS coordinates).
+        dec : float
+            Declination (ICRS coordinates).
+        input_is_mu_lstar : bool, optional
+            If True, mu_l is assumed to be μ_l* (cos-weighted). Default is False.
+
+        Returns
+        -------
+        tuple
+            A tuple containing the proper motions in the RA and Dec directions (ICRS coordinates).
+        """
+        icrs = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+        gal = icrs.galactic
+
+        mu_lstar = (mu_l * np.cos(gal.b)).value if not input_is_mu_lstar else mu_l
+
+        gal_with_pm = SkyCoord(
+            l=gal.l, b=gal.b,
+            pm_l_cosb=mu_lstar * u.mas/u.yr,
+            pm_b=mu_b * u.mas/u.yr,
+            frame="galactic",
+        )
+        icrs_pm = gal_with_pm.icrs
+        return (icrs_pm.pm_ra_cosdec.to_value(u.mas/u.yr), icrs_pm.pm_dec.to_value(u.mas/u.yr))
 
     @staticmethod
     def concatenate_master_df(path_list):
@@ -239,7 +282,7 @@ class GullsParser:
             # Write header
             f.write(",".join(header) + "\n")
             # Write DataFrame
-            df.to_csv(f, index=False)
+            df.to_csv(f, index=False, header=False)
             f.write("\n")
 
         print(f"Saved processed data to: {output_path}")
@@ -291,33 +334,42 @@ class GullsParser:
         return df, comment_text, header
 
     @staticmethod
-    def get_magnitudes(F, fs, ms, observatory_codes):
+    def get_magnitudes(F, Ferr, fs, ms, observatory_codes, eps=1e-12):
         """
         Calculate the magnitudes from the DataFrame using the formula:
         m = m_source + 2.5 * log10(f_s) - 2.5 * log10(F)
-        where F = fs * mu + (1 - fs) is the relative flux.
+        where F = fs * mu + (1 - fs) is the relative flux, and
+        fs = Fs / (Fs + Fl + Fblend). 
+        (Fs + Fl + Fblend = Fbaseline, so F = Fbaseline * fs, and Fblend
+        does not include Fl)
+        σ_m = (2.5 / ln 10) * (σ_F / F)
 
         Parameters:
         - F: Numpy array of relative flux values.
         - fs: List of flux scaling factors for each observatory.
         - ms: List of source magnitudes for each observatory.
         - observatory_codes: List of observatory codes corresponding to fs and ms.
-        
+        - eps: Small value to avoid division by zero.
+
         Returns:
         - A DataFrame with additional columns for magnitudes and their errors.
         """
-        no_of_unique_codes = len(set(observatory_codes))
-        if len(fs) != no_of_unique_codes or len(ms) != no_of_unique_codes:
-            raise ValueError("Length of fs and ms must match the number of observatory codes.")
-        
-        # Calculate the magnitudes
-        mag = ms[observatory_codes] + 2.5 * np.log10(fs[observatory_codes]) - 2.5 * np.log10(F)
+        obs = np.asarray(observatory_codes, dtype=int)
+        F = np.asarray(F, float)
+        Ferr = np.asarray(Ferr, float)
+        fs = np.asarray(fs, float)
+        ms = np.asarray(ms, float)
 
-        # Calculate the errors in magnitudes
-        mag_err = 2.5 / np.log(10) * (F * fs[observatory_codes]) / F**2
-        mag_err = np.sqrt(mag_err**2 + (2.5 / np.log(10) * fs[observatory_codes] / F)**2)
+        if len(fs) != len(np.unique(obs)) or len(ms) != len(np.unique(obs)):
+            raise ValueError("Length of fs and ms must match number of unique observatory codes.")
 
-        return mag, mag_err
+        Fclip = np.clip(F, eps, None)
+        bad = F <= eps  # track the offenders
+
+        mag = ms[obs] + 2.5*np.log10(fs[obs]) - 2.5*np.log10(Fclip)
+        mag_err = (2.5/np.log(10.0)) * (Ferr / Fclip)
+
+        return mag, mag_err, bad
     
     @staticmethod
     def get_zeropoint(elements, table_path="input/Roman_zeropoints_20240301.ecsv"):
@@ -335,7 +387,7 @@ class GullsParser:
             print(f"Zero point table not found at {table_path}. Downloading from URL.")
             
             # Use requests to download the table from the URL
-            url = "https://github.com/rges-pit/roman-technical-information/blob/main/data/WideFieldInstrument/Imaging/ZeroPoints/Roman_zeropoints_20240301.ecsv"
+            url = "https://raw.githubusercontent.com/rges-pit/roman-technical-information/main/data/WideFieldInstrument/Imaging/ZeroPoints/Roman_zeropoints_20240301.ecsv"
             response = requests.get(url)
             if response.status_code == 200:
                 # Save the content to the specified path
@@ -396,7 +448,8 @@ class GullsParser:
     def get_fluxes(mag, mag_err, observatory_codes, zp):
         """
         Calculate the fluxes from the magnitudes using the formula:
-        F = 10 ** ((zp - m) / 2.5)
+        F = 10 ** ((zp - m) / 2.5),
+        σ_F = (ln10/2.5) * F * σ_m,
         
         Parameters:
         - mag: Numpy array of magnitudes.
@@ -414,8 +467,8 @@ class GullsParser:
         F = 10 ** ((zp[observatory_codes] - mag) / 2.5)
         
         # Calculate the errors in fluxes
-        F_err = (F * mag_err) / (2.5 * np.log(10))
-        
+        F_err = (np.log(10) / 2.5) * F * mag_err
+
         return F, F_err
 
     def process_single_lens(self, add_astrometry=True):
@@ -461,6 +514,15 @@ class GullsParser:
                 "obs": df["observatory_code"].to_numpy()
             }
 
+            # look up the zero points for the flux calculation
+            elements = self.filters
+            if not len(elements) == len(df["observatory_code"].unique()):
+                raise ValueError("Number of elements does not match the number of unique observatory codes.\n"
+                                 "You can change the observatory codes using the 'filters' attribute.\n"
+                                 "Currently, the filters are: " + ", ".join(self.filters) + " and the unique "
+                                 "observatory codes are: " + ", ".join(df["observatory_code"].unique()))
+            zp = GullsParser.get_zeropoint(elements)
+
             # Extract parameters from comment text
             for line in comment_text.splitlines():
                 if "Obslensmag" in line:
@@ -469,11 +531,18 @@ class GullsParser:
                     dic["ml_1"] = float(parts[2])
                     dic["ml_2"] = float(parts[3])
                     dic["ml"] = [float(m) for m in parts[1:]]
+                    # Get the lens fluxes
+                    dic["fl"], _ = GullsParser.get_fluxes(
+                        np.array(dic["ml"]),
+                        [0.0, 0.0, 0.0],
+                        [0, 1, 2],
+                        zp
+                    ) 
                 elif "fs" in line:
                     parts = line.split()
-                    dic["FS_0"] = float(parts[1])
-                    dic["FS_1"] = float(parts[2])
-                    dic["FS_2"] = float(parts[3])
+                    dic["fs_0"] = float(parts[1])
+                    dic["fs_1"] = float(parts[2])
+                    dic["fs_2"] = float(parts[3])
                     dic["fs"] = [float(f) for f in parts[1:]]
                 elif "Obssrcmag" in line:
                     parts = line.split()
@@ -484,30 +553,22 @@ class GullsParser:
             
             # Calculate magnitudes and their errors
             print(dic["fs"], dic["ms"])
-            dic["true_mag"], dic["true_mag_err"] = GullsParser.get_magnitudes(
+            dic["true_mag"], dic["true_mag_err"], bad_true = GullsParser.get_magnitudes(
                 df["true_relative_flux"].to_numpy(),
+                df["true_relative_flux_error"].to_numpy(),
                 np.array(dic["fs"]),
                 np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
-            dic["mag"], dic["mag_err"] = GullsParser.get_magnitudes(
+            dic["mag"], dic["mag_err"], bad_meas = GullsParser.get_magnitudes(
                 df["measured_relative_flux"].to_numpy(),
+                df["measured_relative_flux_error"].to_numpy(),
                 np.array(dic["fs"]),
                 np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
-
-            # Calculate the lens flux in each band
-
-
-            # look up the zero points for the flux calculation
-            elements = self.filters
-            if not len(elements) == len(df["observatory_code"].unique()):
-                raise ValueError("Number of elements does not match the number of unique observatory codes.\n"
-                                 "You can change the observatory codes using the 'filters' attribute.\n"
-                                 "Currently, the filters are: " + ", ".join(self.filters) + " and the unique "
-                                 "observatory codes are: " + ", ".join(df["observatory_code"].unique()))
-            zp = GullsParser.get_zeropoint(elements)
+            if bad_true.any() or bad_meas.any():
+                print(f"[WARN] {(bad_true|bad_meas).sum()} flux rows <= 0 were epsilon-clipped for log10.")
             
             # Calculate the fluxes
             dic["true_F"], dic["true_F_err"] = GullsParser.get_fluxes(
@@ -530,12 +591,14 @@ class GullsParser:
                 else:
                     raise KeyError(f"Key '{gulls_key}' not found in master file for single lens event: {data_file.name}")
 
-            # Restructure fl
-            dic["fl"] = [dic["fl_0"], dic["fl_1"], dic["fl_2"]]
+            # Calculate the lens proper motion in ra*cos(dec), dec
+            mu_ra_cosdec, mu_dec = GullsParser.pmlb_to_ra_dec(
+                dic["mul_L"], dic["mub_L"], dic["RA_deg"], dic["dec_deg"]
+            )
+            dic["mu_ra_cosdec_L"] = mu_ra_cosdec
+            dic["mu_dec_L"] = mu_dec
 
             if add_astrometry:
-                
-
                 ##################################################################
                 u0_or_list = dic.get("u0_list", dic.get("u0"))
                 u0_list = [float(u0_or_list)] if np.isscalar(u0_or_list) else list(u0_or_list)
@@ -550,8 +613,8 @@ class GullsParser:
 
                 _, _, dx, dy = Astrometry.centroid_shifts_1l(params_1l)
 
-                dic["data"]["delta_x"] = dx 
-                dic["data"]["delta_y"] = dy  
+                dic["data"]["delta_x"] = dx  # this is getting saved to the new lightcurve file
+                dic["data"]["delta_y"] = dy
 
                 if "delta_x" not in header:
                     header += ["delta_x", "delta_y"]
@@ -563,7 +626,7 @@ class GullsParser:
                 y_L = dic["data"]["lens1_y"]
 
                 # Calculate the combined centroid position relative to lens COM at time t_ref
-                dic["data"]["combined_x"], dic["data"]["combined_y"] = CentroidAddition.add_centroids(
+                dic["combined_x"], dic["combined_y"] = CentroidAddition.add_centroids(
                     x_S, 
                     y_S, 
                     x_L, 
@@ -573,21 +636,41 @@ class GullsParser:
                 )
 
                 # Calculate the total centroid shift in N, E
-                dic["data"]["sigma_N"], dic["data"]["sigma_E"] = CentroidAddition.rotate(
+                dic["sigma_N"], dic["sigma_E"] = CentroidAddition.rotate(
                     dx,
                     dy, 
-                    dic["vN"], 
-                    dic["vE"]
+                    dic["muN"], 
+                    dic["muE"]
                 )
 
+                # Calculate in mas
+                dic["sigma_N_mas"] = dic["sigma_N"] * dic["theta_E"]  # Convert to mas
+                dic["sigma_E_mas"] = dic["sigma_E"] * dic["theta_E"]  # Convert to mas
+
+                # calculate in deg
+                dic["sigma_N_deg"] = dic["sigma_N_mas"] / 3600.0  # Convert to degrees
+                dic["sigma_E_deg"] = dic["sigma_E_mas"] / 3600.0  # Convert to degrees
+
+                # Calculate the lens system motion (mas positions, relative to the t_ref con
+                t0_ref = dic["t0"]
+                dic["L_pos_N"] = dic["mu_dec_L"] * (dic["data"]["Simulation_time"] - t0_ref) / 365.25
+                dic["L_pos_E"] = dic["mu_ra_cosdec_L"] * (dic["data"]["Simulation_time"] - t0_ref) / 365.25
+
+                # Calculate N, E pos relative to the lens axis
+                dic["data"]["pos_N"] = dic["sigma_N_deg"] + dic["dec_deg"] + dic["L_pos_N"] / 3600.0
+                dic["data"]["pos_E"] = dic["sigma_E_deg"] + dic["RA_deg"] + dic["L_pos_E"] / 3600.0
+
                 # Calculate the position error
-                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+                astrometry = Astrometry()
+                dic["pos_err_mas"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+
+                dic["data"]["pos_err_deg"] = dic["pos_err_mas"] / 3600.0
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
-                header += ["sigma_x", "sigma_y", "pos_err"]
-                if header != dic["data"].columns.tolist():
-                    raise ValueError("Header does not match DataFrame columns.")
+                header += ["pos_N", "pos_E", "pos_err_deg"]
+            if header != dic["data"].columns.tolist():
+                raise ValueError("Header does not match DataFrame columns.")
 
             output_path = self.output_single_lens_dir / data_file.name
             GullsParser.save_lc_output(dic["data"], output_path, header, comment_text)
@@ -634,19 +717,35 @@ class GullsParser:
                 "obs": df["observatory_code"].to_numpy()
             }
 
+            # look up the zero points for the flux calculation
+            elements = self.filters
+            if not len(elements) == len(df["observatory_code"].unique()):
+                raise ValueError("Number of elements does not match the number of unique observatory codes.\n"
+                                 "You can change the observatory codes using the 'filters' attribute.\n"
+                                 "Currently, the filters are: " + ", ".join(self.filters) + " and the unique "
+                                 "observatory codes are: " + ", ".join(df["observatory_code"].unique()))
+            zp = GullsParser.get_zeropoint(elements)
+
             # Extract parameters from comment text
             for line in comment_text.splitlines():
                 if "Obslensmag" in line:
                     parts = line.split()
-                    dic["FL_0"] = float(parts[1])
-                    dic["FL_1"] = float(parts[2])
-                    dic["FL_2"] = float(parts[3])
-                    dic["FL"] = [float(f) for f in parts[1:]]
+                    dic["ml_0"] = float(parts[1])
+                    dic["ml_1"] = float(parts[2])
+                    dic["ml_2"] = float(parts[3])
+                    dic["ml"] = [float(f) for f in parts[1:]]
+                    # Get the lens fluxes
+                    dic["fl"], _ = GullsParser.get_fluxes(
+                        np.array(dic["ml"]),
+                        [0.0, 0.0, 0.0],
+                        [0, 1, 2],
+                        zp
+                    ) 
                 elif "fs" in line:
                     parts = line.split()
-                    dic["FS_0"] = float(parts[1])
-                    dic["FS_1"] = float(parts[2])
-                    dic["FS_2"] = float(parts[3])
+                    dic["fs_0"] = float(parts[1])
+                    dic["fs_1"] = float(parts[2])
+                    dic["fs_2"] = float(parts[3])
                     dic["fs"] = [float(f) for f in parts[1:]]
                 elif "Obssrcmag" in line:
                     parts = line.split()
@@ -656,27 +755,22 @@ class GullsParser:
                     dic["ms"] = [float(m) for m in parts[1:]]
 
             # Calculate magnitudes and their errors
-            dic["true_mag"], dic["true_mag_err"] = GullsParser.get_magnitudes(
+            dic["true_mag"], dic["true_mag_err"], bad_true = GullsParser.get_magnitudes(
                 df["true_relative_flux"].to_numpy(),
+                df["true_relative_flux_error"].to_numpy(),
                 np.array(dic["fs"]),
                 np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
-            dic["mag"], dic["mag_err"] = GullsParser.get_magnitudes(
+            dic["mag"], dic["mag_err"], bad_meas = GullsParser.get_magnitudes(
                 df["measured_relative_flux"].to_numpy(),
+                df["measured_relative_flux_error"].to_numpy(),
                 np.array(dic["fs"]),
                 np.array(dic["ms"]),
                 df["observatory_code"].to_numpy()
             )
-
-            # look up the zero points for the flux calculation
-            elements = self.filters
-            if not len(elements) == len(df["observatory_code"].unique()):
-                raise ValueError("Number of elements does not match the number of unique observatory codes.\n"
-                                 "You can change the observatory codes using the 'filters' attribute.\n"
-                                 "Currently, the filters are: " + ", ".join(self.filters) + " and the unique "
-                                 "observatory codes are: " + ", ".join(df["observatory_code"].unique()))
-            zp = GullsParser.get_zeropoint(elements)
+            if bad_true.any() or bad_meas.any():
+                print(f"[WARN] {(bad_true|bad_meas).sum()} flux rows <= 0 were epsilon-clipped for log10.")
 
             # Calculate the fluxes
             dic["true_F"], dic["true_F_err"] = GullsParser.get_fluxes(
@@ -703,10 +797,14 @@ class GullsParser:
                 if gulls_key in row.columns:
                     dic[df_key] = row[gulls_key].values[0]
                 else:
-                    raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")
-                
-            # Restructure fl
-            dic["fl"] = [dic["fl_0"], dic["fl_1"], dic["fl_2"]]
+                    raise KeyError(f"Key '{gulls_key}' not found in master file for {data_file.name}")                             
+
+            # Calculate the proper motion in ra*cos(dec), dec
+            mu_ra_cosdec, mu_dec = GullsParser.pmlb_to_ra_dec(
+                dic["mul_L"], dic["mub_L"], dic["RA_deg"], dic["dec_deg"]
+            )
+            dic["mu_ra_cosdec_L"] = mu_ra_cosdec
+            dic["mu_dec_L"] = mu_dec
             
             if add_astrometry:
                 ##################################################################
@@ -758,12 +856,9 @@ class GullsParser:
                 y_S = dic["data"]["source_y"] + dy  # + dic["data"]["parallax_shift_y"]
                 x_L = dic["data"]["lens1_x"]
                 y_L = dic["data"]["lens1_y"]
-                x_L2 = dic["data"]["lens2_x"]  # LOM?
-                y_L2 = dic["data"]["lens2_y"]
-
 
                 # Calculate the combined centroid position relative to lens COM at time t_ref
-                dic["data"]["combined_x"], dic["data"]["combined_y"] = CentroidAddition.add_centroids(
+                dic["combined_x"], dic["combined_y"] = CentroidAddition.add_centroids(
                     x_S, 
                     y_S, 
                     x_L, 
@@ -772,22 +867,42 @@ class GullsParser:
                     dic["fl"][dic["obs"]]
                 )
 
-                # Calculate the total centroid shift in N, E
-                dic["data"]["sigma_N"], dic["data"]["sigma_E"] = CentroidAddition.rotate(
+                # Calculate the total centroid shift in N, E (theta_E)
+                dic["sigma_N"], dic["sigma_E"] = CentroidAddition.rotate(
                     dx,
                     dy, 
-                    dic["vN"], 
-                    dic["vE"]
+                    dic["muN"], 
+                    dic["muE"]
                 )
 
+                # Calculate in mas
+                dic["sigma_N_mas"] = dic["sigma_N"] * dic["theta_E"]  # Convert to mas
+                dic["sigma_E_mas"] = dic["sigma_E"] * dic["theta_E"]  # Convert to mas
+
+                # calculate in deg
+                dic["sigma_N_deg"] = dic["sigma_N_mas"] / 3600.0  # Convert to degrees
+                dic["sigma_E_deg"] = dic["sigma_E_mas"] / 3600.0  # Convert to degrees
+
+                # Calculate the lens system motion (mas positions, relative to the t_ref con
+                t0_ref = dic["t0"]
+                dic["L_pos_N"] = dic["mu_dec_L"] * (dic["data"]["Simulation_time"] - t0_ref) / 365.25
+                dic["L_pos_E"] = dic["mu_ra_cosdec_L"] * (dic["data"]["Simulation_time"] - t0_ref) / 365.25
+
+                # Calculate N, E pos
+                dic["data"]["pos_N"] = dic["sigma_N_deg"] + dic["dec_deg"] + dic["L_pos_N"] / 3600.0
+                dic["data"]["pos_E"] = dic["sigma_E_deg"] + dic["RA_deg"] + dic["L_pos_E"] / 3600.0
+
                 # Calculate the position error
-                dic["data"]["pos_err"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+                astrometry = Astrometry()
+                dic["pos_err_mas"] = astrometry.get_pos_err(dic["F"], dic["F_err"], dic["obs"])
+
+                dic["data"]["pos_err_deg"] = dic["pos_err_mas"] / 3600.0
 
                 # Add the new columns to the header
                 # we are just being explicit to be careful
-                header += ["sigma_x", "sigma_y", "pos_err"]
-                if header != dic["data"].columns.tolist():
-                    raise ValueError("Header does not match DataFrame columns.")
+                header += ["pos_N", "pos_E", "pos_err_deg"]
+            if header != dic["data"].columns.tolist():
+                raise ValueError("Header does not match DataFrame columns.")
 
             # Save the processed DataFrame to the output directory
             output_path = self.output_binary_lens_dir / data_file.name
@@ -795,8 +910,11 @@ class GullsParser:
 
     def process_triple_lens(self, add_astrometry=True):
         """
-        Process triple lens data and save the output.
+        Process triple lens data and save the output. 
+        This fuction doesn't event a little bit work.
+        It's a tomorrow problem.
         """
+        return None
         # load master file(s) with meta data (.csv, .out)
         self.load_triple_lens_master()
 
@@ -857,14 +975,22 @@ class GullsParser:
                     dic["ms"] = [float(m) for m in parts[1:]]
 
             # Calculate magnitudes and their errors
-            dic["true_mag"], dic["true_mag_err"] = GullsParser.get_magnitudes(
+            dic["true_mag"], dic["true_mag_err"], bad_true = GullsParser.get_magnitudes(
                 df["true_relative_flux"].to_numpy(),
-                df["true_relative_flux_error"].to_numpy()
+                df["true_relative_flux_error"].to_numpy(),
+                np.array(dic["fs"]),
+                np.array(dic["ms"]),
+                df["observatory_code"].to_numpy()
             )
-            dic["mag"], dic["mag_err"] = GullsParser.get_magnitudes(
+            dic["mag"], dic["mag_err"], bad_meas = GullsParser.get_magnitudes(
                 df["measured_relative_flux"].to_numpy(),
-                df["measured_relative_flux_error"].to_numpy()
+                df["measured_relative_flux_error"].to_numpy(),
+                np.array(dic["fs"]),
+                np.array(dic["ms"]),
+                df["observatory_code"].to_numpy()
             )
+            if bad_true.any() or bad_meas.any():
+                print(f"[WARN] {(bad_true|bad_meas).sum()} flux rows <= 0 were epsilon-clipped for log10.")
 
             # look up the zero points for the flux calculation
             elements = self.filters
@@ -959,8 +1085,8 @@ class GullsParser:
                 # Add the new columns to the header
                 # we are just being explicit to be careful
                 header += ["sigma_x", "sigma_y", "pos_err"]
-                if header != dic["data"].columns.tolist():
-                    raise ValueError("Header does not match DataFrame columns.")
+            if header != dic["data"].columns.tolist():
+                raise ValueError("Header does not match DataFrame columns.")
             
             # Save the processed DataFrame to the output directory
             output_path = self.output_triple_lens_dir / data_file.name
