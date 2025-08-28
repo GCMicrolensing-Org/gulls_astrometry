@@ -1,0 +1,205 @@
+# test.ipynb
+
+```python
+import numpy as np
+```
+
+```python
+fs = 0.91
+ml = 24.91
+ms = 19.31
+
+zp = 27.58
+
+m_base = ms + 2.5*np.log10(fs)
+
+print(f"m_base = {m_base}")
+```
+
+```python
+np.log10(1)
+```
+
+```python
+ms_check = zp - 2.5*np.log10(fs)
+print(f"ms = {ms_check}")
+```
+
+```python
+zp_calc = ms + 2.5*np.log10(fs)
+print(f"zp = {zp_calc}")
+```
+
+```python
+ms_check = zp_calc - 2.5*np.log10(fs)
+print(f"ms = {ms_check}")
+```
+
+```python
+F = 1.3673
+m_check = ms - 2.5*np.log10(F/fs)
+print(f"m = {m_check}")
+```
+
+```python
+F_real = 10**(0.4*(18.6 - m_check))
+print(f"F = {F_real}")
+```
+
+```python
+#F = 3631 << 0  # 3631 Jy = 0 mag
+m = zp - 2.5*np.log10(F)
+print(f"m = {m}")
+```
+
+```python
+F
+```
+
+```python
+fs = 0.91
+ml = 24.91
+ms = 19.31
+
+zp = 27.58
+
+m_base = ms + 2.5*np.log10(fs)
+print(f"zp_gulls = {m_base}")
+F_L = 10**(0.4*(m_base - ml))
+F_S = 10**(0.4*(m_base - ms))
+f_base = 10**(0.4*(m_base))
+print(f"f_base = {f_base}")
+F_base = 10**(0.4*(27.58 - m_base))
+print(f"F_base = {F_base}")
+# fs = F_S/F_base
+F_base = F_S
+print(f"F_S, F_L = {F_S}, {F_L}")
+#print(f"F-F_blend = {fl+fs}")
+#F = 1.3673
+#F_blend = F - fs - fl
+#print(f"F_blend = {F_blend}")
+```
+
+```python
+10**(-0.4*26) * 15 * 60 * 
+```
+
+```python
+60 * 15
+```
+
+```python
+# one hour point-source magnitude limit
+m_hr = 28.01
+
+f_hr = 10**(0.4*(27.58 - m_hr))
+print(f"f_hr = {f_hr}")
+f_15m = f_hr * 4
+print(f"f_15m = {f_15m}")
+m_15m = 27.58 - 2.5*np.log10(f_15m)
+print(f"m_15m = {m_15m}")  # <- effectively the magnitude limit for 15m exposure
+```
+
+```python
+# 57 second point source magnitude limit
+m_57s = 25.37
+f_57s = 10**(0.4*(27.58 - m_57s))
+print(f"f_57s = {f_57s}")
+```
+
+```python
+# wg09_test_ffp_1_673_851
+fs = 0.968348
+ml = 24.9053
+ms = 19.3117
+zp = 27.58  # AB (from roman technical info)
+
+m_base = ms + 2.5*np.log10(fs)  # <- Gulls zero point for this event
+print(f"m_base = {m_base}\n")
+
+F_t1 = 1.36523069019  # relative flux at first epoch
+m_t1 = ms - 2.5*np.log10(F_t1/fs)
+print(f"m_t1 = {m_t1}")
+m_t1_check = m_base - 2.5*np.log10(F_t1)
+print(f"m_t1_check = {m_t1_check}")
+F_t1_real = 10**(0.4*(zp - m_t1))
+print(f"F_t1_rel = {F_t1_real}\n")
+
+F_zp_real = 10**(0.4*(zp - zp))
+print(f"F_zp_real = {F_zp_real}")
+F_base_real = 10**(0.4*(zp-m_base))
+print(f"F_base_real = {F_base_real}")
+F_L_real = 10**(0.4*(zp-ml))
+print(f"F_L_real = {F_L_real}")
+F_S_real = 10**(0.4*(zp-ms))
+print(f"F_S_real = {F_S_real}\n")
+
+F_1 = 1.0
+m_1 = m_base - 2.5*np.log10(F_1)
+print(f"m_1 = {m_1}")
+F_1_real = 10**(0.4*(zp - m_1))
+print(f"F_1_real = {F_1_real}\n")
+
+print(f"ms = {ms}")
+print(f"ml = {ml}")
+
+F_blend = F_1_real - F_S_real
+print(f"F_blend = {F_blend}")
+```
+
+```python
+# wg09_test_ffp_2_8_573
+fs = 0.0339458
+ml = 26.3712
+ms = 23.7841
+zp = 27.58  # AB (from roman technical info)
+
+m_base = ms + 2.5*np.log10(fs)  # <- Gulls zero point for this event
+print(f"m_base = {m_base}")
+f_base_true = 10**(0.4*(27.58 - m_base))  # and by "true" I mean AB system
+print(f"f_base_true = {f_base_true}\n")
+F_S = f_base_true * fs
+print(f"F_S = {F_S}\n")
+
+F_t1 = 1.0009489753  # relative flux at first epoch
+m_t1 = ms - 2.5*np.log10(F_t1/fs)
+print(f"m_t1 = {m_t1}")
+m_t1_check = m_base - 2.5*np.log10(F_t1)
+print(f"m_t1_check = {m_t1_check}")
+F_t1_real = 10**(0.4*(zp - m_t1))
+print(f"F_t1_rel = {F_t1_real}\n")
+# fs = F_S/F_base
+
+F_max = 7.48578677422
+m_max = m_base - 2.5*np.log10(F_max)
+print(f"m_max = {m_max}")
+m_max_check = ms - 2.5*np.log10(F_max/fs)
+print(f"m_max_check = {m_max_check}")
+F_max_real = 10**(0.4*(zp - m_max))
+print(f"F_max_real = {F_max_real}\n")
+
+F_zp_real = 10**(0.4*(zp - zp))
+print(f"F_zp_real = {F_zp_real}")
+F_base_real = 10**(0.4*(zp-m_base))
+print(f"F_base_real = {F_base_real}")
+F_L_real = 10**(0.4*(zp-ml))
+print(f"F_L_real = {F_L_real}")
+F_S_real = 10**(0.4*(zp-ms))
+print(f"F_S_real = {F_S_real}\n")
+
+F_1 = 1.0
+m_1 = m_base - 2.5*np.log10(F_1)
+print(f"m_1 = {m_1}")
+F_1_real = 10**(0.4*(zp - m_1))
+print(f"F_1_real = {F_1_real}\n")
+
+print(f"ms = {ms}")
+print(f"ml = {ml}")
+
+F_blend = F_1_real - F_S_real
+print(f"F_blend = {F_blend}")
+```
+
+```python
+
+```
